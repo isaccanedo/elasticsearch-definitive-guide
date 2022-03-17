@@ -1,0 +1,325 @@
+=== Finding Exact Values
+
+When working with exact values,((("structured search", "finding exact values")))((("exact values", "finding")))
+you will be working with non-scoring, filtering queries. Filters are
+important because they are very fast.  They do not calculate
+relevance (avoiding the entire scoring phase) and are easily cached. We'll
+talk about the performance benefits of filters later in <<filter-caching>>,
+but for now, just keep in mind that you should use filtering queries as often as you
+can.
+
+==== term Query with Numbers
+
+We are going to explore the `term` query ((("term query", "with numbers")))
+((("structured search", "finding exact values", "using term filter with numbers")))
+first because you will use it often. This query is capable of handling numbers,
+booleans, dates, and text.
+
+We'll start by indexing some documents representing products, each having a
+ `price` and `productID`:
+
+[source,js]
+--------------------------------------------------
+POST /my_store/products/_bulk
+{ "index": { "_id": 1 }}
+{ "price" : 10, "productID" : "XHDK-A-1293-#fJ3" }
+{ "index": { "_id": 2 }}
+{ "price" : 20, "productID" : "KDKE-B-9947-#kL5" }
+{ "index": { "_id": 3 }}
+{ "price" : 30, "productID" : "JODL-X-1937-#pV7" }
+{ "index": { "_id": 4 }}
+{ "price" : 30, "productID" : "QQPX-R-3956-#aD8" }
+--------------------------------------------------
+// SENSE: 080_Structured_Search/05_Term_number.json
+
+Our goal is to find all products with a certain price.  You may be familiar
+with SQL if you are coming from a relational database background.  If we
+expressed this query as an SQL query, it would look like this:
+
+[source,sql]
+--------------------------------------------------
+SELECT document
+FROM   products
+WHERE  price = 20
+--------------------------------------------------
+
+In the Elasticsearch query DSL, we use a `term` query to accomplish the same
+thing.  The `term` query will look for the exact value that we specify.  By
+itself, a `term` query is simple. It accepts a field name and the value
+that we wish to find:
+
+[source,js]
+--------------------------------------------------
+{
+    "term" : {
+        "price" : 20
+    }
+}
+--------------------------------------------------
+
+Usually, when looking for an exact value, we don't want to score the query.  We just
+want to include/exclude documents, so we will use a `constant_score` query to execute
+the `term` query in a non-scoring mode and apply a uniform score of one.
+
+The final combination will be a `constant_score` query which contains a `term` query:
+
+[source,js]
+--------------------------------------------------
+GET /my_store/products/_search
+{
+    "query" : {
+        "constant_score" : { <1>
+            "filter" : {
+                "term" : { <2>
+                    "price" : 20
+                }
+            }
+        }
+    }
+}
+--------------------------------------------------
+// SENSE: 080_Structured_Search/05_Term_number.json
+
+<1> We use a `constant_score` to convert the `term` query into a filter
+<2>  The `term` query that we saw previously.
+
+Once executed, the search results from this query are exactly what you would
+expect: only document 2 is returned as a hit (because only `2` had a price
+of `20`):
+
+[source,json]
+--------------------------------------------------
+"hits" : [
+    {
+        "_index" : "my_store",
+        "_type" :  "products",
+        "_id" :    "2",
+        "_score" : 1.0, <1>
+        "_source" : {
+          "price" :     20,
+          "productID" : "KDKE-B-9947-#kL5"
+        }
+    }
+]
+--------------------------------------------------
+<1> Queries placed inside the `filter` clause do not perform scoring or relevance,
+so all results receive a neutral score of `1`.
+
+==== term Query with Text
+
+As mentioned at the top of ((("structured search", "finding exact values", "using term filter with text")))
+((("term filter", "with text")))this section, the `term` query can match strings
+just as easily as numbers.  Instead of price, let's try to find products that
+have a certain UPC identification code. To do this with SQL, we might use a
+query like this:
+
+[source,sql]
+--------------------------------------------------
+SELECT product
+FROM   products
+WHERE  productID = "XHDK-A-1293-#fJ3"
+--------------------------------------------------
+
+Translated into the query DSL, we can try a similar query with the `term`
+filter, like so:
+
+[source,js]
+--------------------------------------------------
+GET /my_store/products/_search
+{
+    "query" : {
+        "constant_score" : {
+            "filter" : {
+                "term" : {
+                    "productID" : "XHDK-A-1293-#fJ3"
+                }
+            }
+        }
+    }
+}
+--------------------------------------------------
+// SENSE: 080_Structured_Search/05_Term_text.json
+
+Except there is a little hiccup: we don't get any results back!  Why is
+that? The problem isn't with the `term` query; it is with the way
+the data has been indexed. ((("analyze API, using to understand tokenization"))) If we use the `analyze` API (<<analyze-api>>), we
+can see that our UPC has been tokenized into smaller tokens:
+
+[source,js]
+--------------------------------------------------
+GET /my_store/_analyze
+{
+  "field": "productID",
+  "text": "XHDK-A-1293-#fJ3"
+}
+--------------------------------------------------
+// SENSE: 080_Structured_Search/05_Term_text.json
+
+[source,js]
+--------------------------------------------------
+{
+  "tokens" : [ {
+    "token" :        "xhdk",
+    "start_offset" : 0,
+    "end_offset" :   4,
+    "type" :         "<ALPHANUM>",
+    "position" :     1
+  }, {
+    "token" :        "a",
+    "start_offset" : 5,
+    "end_offset" :   6,
+    "type" :         "<ALPHANUM>",
+    "position" :     2
+  }, {
+    "token" :        "1293",
+    "start_offset" : 7,
+    "end_offset" :   11,
+    "type" :         "<NUM>",
+    "position" :     3
+  }, {
+    "token" :        "fj3",
+    "start_offset" : 13,
+    "end_offset" :   16,
+    "type" :         "<ALPHANUM>",
+    "position" :     4
+  } ]
+}
+--------------------------------------------------
+// SENSE: 080_Structured_Search/05_Term_text.json
+
+There are a few important points here:
+
+* We have four distinct tokens instead of a single token representing the UPC.
+* All letters have been lowercased.
+* We lost the hyphen and the hash (`#`) sign.
+
+So when our `term` query looks for the exact value `XHDK-A-1293-#fJ3`, it
+doesn't find anything, because that token does not exist in our inverted index.
+Instead, there are the four tokens listed previously.
+
+Obviously, this is not what we want to happen when dealing with identification
+codes, or any kind of precise enumeration.
+
+To prevent this from happening, we need to tell Elasticsearch that this field
+contains an exact value by  setting it to be `not_analyzed`.((("not_analyzed string fields"))) We saw this
+originally in <<custom-field-mappings>>.  To do this, we need to first delete
+our old index (because it has the incorrect mapping) and create a new one with
+the correct mappings:
+
+[source,js]
+--------------------------------------------------
+DELETE /my_store <1>
+
+PUT /my_store <2>
+{
+    "mappings" : {
+        "products" : {
+            "properties" : {
+                "productID" : {
+                    "type" : "string",
+                    "index" : "not_analyzed" <3>
+                }
+            }
+        }
+    }
+
+}
+--------------------------------------------------
+// SENSE: 080_Structured_Search/05_Term_text.json
+<1> Deleting the index first is required, since we cannot change mappings that
+    already exist.
+<2> With the index deleted, we can re-create it with our custom mapping.
+<3> Here we explicitly say that we don't want `productID` to be analyzed.
+
+Now we can go ahead and reindex our documents:
+
+[source,js]
+--------------------------------------------------
+POST /my_store/products/_bulk
+{ "index": { "_id": 1 }}
+{ "price" : 10, "productID" : "XHDK-A-1293-#fJ3" }
+{ "index": { "_id": 2 }}
+{ "price" : 20, "productID" : "KDKE-B-9947-#kL5" }
+{ "index": { "_id": 3 }}
+{ "price" : 30, "productID" : "JODL-X-1937-#pV7" }
+{ "index": { "_id": 4 }}
+{ "price" : 30, "productID" : "QQPX-R-3956-#aD8" }
+--------------------------------------------------
+// SENSE: 080_Structured_Search/05_Term_text.json
+
+Only now will our `term` query work as expected.  Let's try it again on the
+newly indexed data (notice, the query and filter have not changed at all, just
+how the data is mapped):
+
+[source,js]
+--------------------------------------------------
+GET /my_store/products/_search
+{
+    "query" : {
+        "constant_score" : {
+            "filter" : {
+                "term" : {
+                    "productID" : "XHDK-A-1293-#fJ3"
+                }
+            }
+        }
+    }
+}
+--------------------------------------------------
+// SENSE: 080_Structured_Search/05_Term_text.json
+
+Since the `productID` field is not analyzed, and the `term` query performs no
+analysis, the query finds the exact match and returns document 1 as a hit.
+Success!
+
+[[_internal_filter_operation]]
+==== Internal Filter Operation
+
+Internally, Elasticsearch is((("structured search", "finding exact values", "intrnal filter operations")))
+((("filters", "internal filter operation"))) performing several operations when executing a
+non-scoring query:
+
+1. _Find matching docs_.
++
+The `term` query looks up the term `XHDK-A-1293-#fJ3` in the inverted index
+and retrieves the list of documents that contain that term.  In this case,
+only document 1 has the term we are looking for.
+
+2. _Build a bitset_.
++
+The filter then builds a _bitset_--an array of 1s and 0s--that
+describes which documents contain the term.  Matching documents receive a  `1`
+bit.  In our example, the bitset would be `[1,0,0,0]`.  Internally, this is represented
+as a https://www.elastic.co/blog/frame-of-reference-and-roaring-bitmaps["roaring bitmap"],
+which can efficiently encode both sparse and dense sets.
+
+3. _Iterate over the bitset(s)_
++
+Once the bitsets are generated for each query, Elasticsearch iterates over the
+bitsets to find the set of matching documents that satisfy all filtering criteria.
+The order of execution is decided heuristically, but generally the most sparse
+bitset is iterated on first (since it excludes the largest number of documents).
+
+4. _Increment the usage counter_.
++
+Elasticsearch can cache non-scoring queries for faster access, but it's silly to
+cache something that is used only rarely.  Non-scoring queries are already quite fast
+due to the inverted index, so we only want to cache queries we _know_ will be used
+again in the future to prevent resource wastage.
++
+To do this, Elasticsearch tracks the history of query usage on a per-index basis.
+If a query is used more than a few times in the last 256 queries, it is cached
+in memory.  And when the bitset is cached, caching is omitted on segments that have
+fewer than 10,000 documents (or less than 3% of the total index size). These
+small segments tend to disappear quickly anyway and it is a waste to associate a
+cache with them.
+
+
+Although not quite true in reality (execution is a bit more complicated based on
+how the query planner re-arranges things, and some heuristics based on query cost),
+you can conceptually think of non-scoring queries as executing _before_ the scoring
+queries.  The job of non-scoring queries is to reduce the number of documents that
+the more costly scoring queries need to evaluate, resulting in a faster search request.
+
+By conceptually thinking of non-scoring queries as executing first, you'll be
+equipped to write efficient and fast search requests.

@@ -1,0 +1,25 @@
+==== Metadata: Document Identity
+
+There are four metadata fields ((("metadata, document", "identity")))associated with document identity:
+
+`_id`::
+   The string ID of the document
+
+`_type`::
+   The type name of the document
+
+`_index`::
+   The index where the document lives
+
+`_uid`::
+   The `_type` and `_id` concatenated together as `type#id`
+
+By default, the `_uid` field is((("id field"))) stored (can be retrieved) and
+indexed (searchable).  The `_type` field((("type field")))((("index field")))((("uid field"))) is indexed but not stored,
+and the `_id` and `_index` fields are neither indexed nor stored, meaning
+they don't really exist.
+
+In spite of this, you can query the `_id` field as though it were a real
+field.  Elasticsearch uses the `_uid` field to derive the `_id`. Although you
+can change the `index` and `store` settings for these fields, you almost
+never need to do so.

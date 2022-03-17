@@ -1,0 +1,106 @@
+[[filter-caching]]
+=== All About Caching
+
+Earlier in this chapter (<<_internal_filter_operation>>), we briefly discussed
+how non-scoring queries are calculated.((("structured search", "caching of query results")))
+((("caching", "bitsets representing documents matching queries")))((("bitsets, caching of")))
+((("queries", "bitsets representing documents matching, caching of")))  At their
+heart is a bitset representing which documents match the filter.  When Elasticsearch
+determines a bitset is likely to be reused in the future, it will be cached directly
+in memory for later use.  Once cached, these bitsets can be reused _wherever_
+the same query is used, without having to reevaluate the entire query again.
+
+These cached bitsets are ``smart'': they are updated incrementally. As you
+index new documents, only those new documents need to be added to the existing
+bitsets, rather than having to recompute the entire cached filter over and
+over. Filters are real-time like the rest of the system; you don't need to
+worry about cache expiry.
+
+==== Independent Query Caching
+
+The bitsets belonging to a query component are independent from the rest of the
+search request.  This means that, once cached, a query can be reused in multiple
+search requests.  It is not dependent on the "context" of the surrounding query.
+This allows caching to accelerate the most frequently used portions of your queries,
+without wasting overhead on the less frequent / more volatile portions.
+
+Similarly, if a single search request reuses the same non-scoring query, its
+cached bitset can be reused for all instances inside the single search request.
+
+Let's look at this example query, which looks for emails that are either of the following:
+
+* In the inbox and have not been read
+* _Not_ in the inbox but have been marked as important
+
+[source,js]
+--------------------------------------------------
+GET /inbox/emails/_search
+{
+  "query": {
+      "constant_score": {
+          "filter": {
+              "bool": {
+                 "should": [
+                    { "bool": {
+                          "must": [
+                             { "term": { "folder": "inbox" }}, <1>
+                             { "term": { "read": false }}
+                          ]
+                    }},
+                    { "bool": {
+                          "must_not": {
+                             "term": { "folder": "inbox" } <1>
+                          },
+                          "must": {
+                             "term": { "important": true }
+                          }
+                    }}
+                 ]
+              }
+            }
+        }
+    }
+}
+--------------------------------------------------
+<1> These two queries are identical and will use the same bitset.
+
+Even though one of the inbox clauses is a `must` clause and the other is a
+`must_not` clause, the two clauses themselves are identical. If this particular
+`term` query was previously cached, both instances would benefit from the cached
+representation despite being used in different styles of boolean logic.
+
+This ties in nicely with the composability of the query DSL.  It is easy to
+move filtering queries around, or reuse the same query in multiple places within the
+search request.  This isn't just convenient to the developer--it has direct
+performance benefits.
+
+==== Autocaching Behavior
+
+In older versions of Elasticsearch, the default behavior was to cache everything
+that was cacheable.  This often meant the system cached bitsets too aggressively
+and performance suffered due to thrashing the cache.  In addition, many filters
+are very fast to evaluate, but substantially slower to cache (and reuse from cache).
+These filters don't make sense to cache, since you'd be better off just re-executing
+the filter again.
+
+Inspecting the inverted index is very fast and most query components are rare.
+Consider a `term` filter on a `"user_id"` field:  if you have millions of users,
+any particular user ID will only occur rarely.  It isn't profitable to cache
+the bitsets for this filter, as the cached result will likely be evicted
+from the cache before it is used again.
+
+This type of cache churn can have serious effects on performance.  What's worse,
+it is difficult for developers to identify which components exhibit good cache
+behavior and which are useless.
+
+To address this, Elasticsearch caches queries automatically based on usage frequency.
+If a non-scoring query has been used a few times (dependent on the query type) in the last 256 queries,
+the query is a candidate for caching.  However, not all segments are guaranteed
+to cache the bitset.  Only segments that hold more than 10,000 documents (or 3%
+of the total documents, whichever is larger) will cache the bitset.  Because
+small segments are fast to search and merged out quickly, it doesn't make sense
+to cache bitsets here.
+
+Once cached, a non-scoring bitset will remain in the cache until it is evicted.
+Eviction is done on an LRU basis: the least-recently used filter will be evicted
+once the cache is full.

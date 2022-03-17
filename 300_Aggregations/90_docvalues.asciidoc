@@ -1,0 +1,94 @@
+[[docvalues]]
+=== Doc Values
+
+Aggregations work via a data structure known as _doc values_ (briefly introduced
+in <<docvalues-intro>>).  ((("docvalues")))((("docvalues")))Doc values
+are what make aggregations fast, efficient and memory-friendly, so it is useful
+to understand how they work.
+
+Doc values exists because inverted indices are efficient for only certain operations.
+The inverted index excels((("inverted index", "doc values versus"))) at finding documents that contain a term.  It does not
+perform well in the opposite direction: determining which terms exist in a single
+document. Aggregations need this secondary access pattern.
+
+Consider the following inverted index:
+
+    Term      Doc_1   Doc_2   Doc_3
+    ------------------------------------
+    brown   |   X   |   X   |
+    dog     |   X   |       |   X
+    dogs    |       |   X   |   X
+    fox     |   X   |       |   X
+    foxes   |       |   X   |
+    in      |       |   X   |
+    jumped  |   X   |       |   X
+    lazy    |   X   |   X   |
+    leap    |       |   X   |
+    over    |   X   |   X   |   X
+    quick   |   X   |   X   |   X
+    summer  |       |   X   |
+    the     |   X   |       |   X
+    ------------------------------------
+
+If we want to compile a complete list of terms in any document that mentions
++brown+, we might build a query like so:
+
+[source,js]
+----
+GET /my_index/_search
+{
+  "query" : {
+    "match" : {
+      "body" : "brown"
+    }
+  },
+  "aggs" : {
+    "popular_terms": {
+      "terms" : {
+        "field" : "body"
+      }
+    }
+  }
+}
+----
+
+The query portion is easy and efficient.  The inverted index is sorted by
+terms, so first we find +brown+ in the terms list, and then scan across all the
+columns to see which documents contain +brown+.  We can very quickly see that
+`Doc_1` and `Doc_2` contain the token +brown+.
+
+Then, for the aggregation portion, we need to find all the unique terms in
+`Doc_1`  and `Doc_2`.((("aggregations", "doc values", "using instead of inverted index")))  Trying to do this with the inverted index would be a
+very expensive process: we would have to iterate over every term in the index
+and collect tokens from `Doc_1`  and `Doc_2` columns.  This would be slow
+and scale poorly: as the number of terms and  documents grows, so would the
+execution time.
+
+Doc values addresses this problem by inverting the relationship. While the
+inverted index maps terms to the documents containing the term, doc values
+maps documents to the terms contained by the document:
+
+    Doc      Terms
+    -----------------------------------------------------------------
+    Doc_1 | brown, dog, fox, jumped, lazy, over, quick, the
+    Doc_2 | brown, dogs, foxes, in, lazy, leap, over, quick, summer
+    Doc_3 | dog, dogs, fox, jumped, over, quick, the
+    -----------------------------------------------------------------
+
+Once the data has been uninverted, it is trivial to collect the unique tokens from
+`Doc_1` and `Doc_2`.  Go to the rows for each document, collect all the terms, and
+take the union of the two sets.
+
+Thus, search and aggregations are closely intertwined.  Search finds documents
+by using the inverted index.  Aggregations collect and aggregate values from
+doc values.
+
+[NOTE]
+==================================================
+
+Doc values are not just used for aggregations.((("doc values", "uses other than aggregations")))  They are required for any
+operation that must look up the value contained in a specific document.
+Besides aggregations, this includes sorting, scripts that access field
+values and parent-child relationships (see <<parent-child>>).
+
+==================================================

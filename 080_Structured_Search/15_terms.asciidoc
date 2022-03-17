@@ -1,0 +1,76 @@
+=== Finding Multiple Exact Values
+
+The `term` query is useful for finding a single value, but often you'll  want
+to search for multiple values.((("exact values", "finding multiple")))
+((("structured search", "finding multiple exact values")))  What if you want to
+find documents that have a price of $20 or $30?
+
+Rather than using multiple `term` queries, you can instead use a single `terms`
+query (note the _s_ at the end).  The `terms` query((("terms query"))) is simply the plural
+version of the singular `term` query cousin.
+
+It looks nearly identical to a vanilla `term` too.  Instead of
+specifying a single price, we are now specifying an array of values:
+
+[source,js]
+--------------------------------------------------
+{
+    "terms" : {
+        "price" : [20, 30]
+    }
+}
+--------------------------------------------------
+
+And like the `term` query, we will place it inside the `filter` clause of a
+constant score query to use it:
+
+[source,js]
+--------------------------------------------------
+GET /my_store/products/_search
+{
+    "query" : {
+        "constant_score" : {
+            "filter" : {
+                "terms" : { <1>
+                    "price" : [20, 30]
+                }
+            }
+        }
+    }
+}
+--------------------------------------------------
+// SENSE: 080_Structured_Search/15_Terms_filter.json
+
+<1> The `terms` query as seen previously, but placed inside the `constant_score` query
+
+The query will return the second, third, and fourth documents:
+
+[source,json]
+--------------------------------------------------
+"hits" : [
+    {
+        "_id" :    "2",
+        "_score" : 1.0,
+        "_source" : {
+          "price" :     20,
+          "productID" : "KDKE-B-9947-#kL5"
+        }
+    },
+    {
+        "_id" :    "3",
+        "_score" : 1.0,
+        "_source" : {
+          "price" :     30,
+          "productID" : "JODL-X-1937-#pV7"
+        }
+    },
+    {
+        "_id":     "4",
+        "_score":  1.0,
+        "_source": {
+           "price":     30,
+           "productID": "QQPX-R-3956-#aD8"
+        }
+     }
+]
+--------------------------------------------------
